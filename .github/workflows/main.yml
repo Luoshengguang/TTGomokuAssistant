@@ -36,12 +36,75 @@ jobs:
       - name: Locate project
         id: locate
         run: |
-          PROJECT_DIR=$(find project -name settings.gradle.kts -print -quit | xargs dirname)
-          if [ -z "$PROJECT_DIR" ]; then
+          SETTINGS_FILE=$(find project -name settings.gradle.kts -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
             echo "找不到 settings.gradle.kts"
             exit 1
           fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Fix Java and Kotlin JVM target
+        env:
+          PROJECT_DIR: ${{ steps.locate.outputs.dir }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PROJECT_DIR"]) / "app" / "build.gradle.kts"
+
+          if not path.exists():
+              raise SystemExit(f"找不到文件: {path}")
+
+          text = path.read_text(encoding="utf-8")
+
+          start = text.find("android {")
+          if start == -1:
+              raise SystemExit("找不到 android 配置块")
+
+          open_pos = text.find("{", start)
+          depth = 0
+          close_pos = -1
+
+          for i in range(open_pos, len(text)):
+              if text[i] == "{":
+                  depth += 1
+              elif text[i] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      close_pos = i
+                      break
+
+          if close_pos == -1:
+              raise SystemExit("android 配置块结构异常")
+
+          additions = []
+
+          if "compileOptions {" not in text:
+              additions.append("""
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              """)
+
+          if "kotlinOptions {" not in text:
+              additions.append("""
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              """)
+
+          if additions:
+              text = text[:close_pos] + "\n" + "\n".join(additions) + "\n" + text[close_pos:]
+              path.write_text(text, encoding="utf-8")
+
+          print("Java 和 Kotlin JVM target 配置检查完成")
+          print(path.read_text(encoding="utf-8"))
+          PY
 
       - name: Build APK
         run: |
